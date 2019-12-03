@@ -6,31 +6,64 @@ namespace dcv = dip_opencv;
 
 #include <opencv2/opencv.hpp>
 #include <iostream>
+#include <unistd.h>
 
-size_t framecnt = 0, showcnt = 0;
-
-void run( cv::VideoCapture &cap, dip::Image &frame ) {
-  cv::Mat cvframe;
-
-  while (1) {
-     while ( showcnt != framecnt ) {
-        usleep(1000);
-     }
+class CaptureThread
+{
+   protected:
+      cv::VideoCapture &cap_;
+      cv::Mat frame_;
+      bool updated_;
+      bool continue_;
+      std::thread thread_;
+      
+   public:
+      CaptureThread( cv::VideoCapture &cap ) : cap_( cap ), updated_( false ), continue_( true ) {
+         thread_ = std::thread( &CaptureThread::run, this );
+      }
+      
+      ~CaptureThread() {
+         continue_ = false;
+         thread_.join();
+      }
+      
+      // NOTE: will miss some frames due to race conditions
+      bool updated() {
+         if ( updated_ ) {
+            updated_ = false;
+            return true;
+         } else {
+            return false;
+         }
+      }
+      
+      bool running() {
+         return continue_;
+      }
+      
+      cv::Mat frame() {
+         return frame_;
+      }
   
-     if ( !cap.read( cvframe) ) {
-        break;
-     }
-     
-     // Directly capturing to a shared data segment
-     // results in memory corruption. Not sure why.
-     frame = dcv::MatToDip( cvframe ).Copy();
-     framecnt++;
-  }
-}
+   protected:
+      void run() {
+         while ( continue_ ) {
+            if ( !cap_.read( frame_ ) ) {
+               std::cout << "Cannot capture frame" << std::endl;
+               
+               continue_ = false;
+               break;
+            }
+
+            updated_ = true;
+         }
+         
+      }
+};
 
 int main(int argc, char* argv[])
 {
-   cv::VideoCapture cap(0);
+   cv::VideoCapture cap( 0 );
 
    if ( !cap.isOpened() ) {
       std::cout << "Cannot open the camera" << std::endl;
@@ -46,39 +79,47 @@ int main(int argc, char* argv[])
       cap.set( cv::CAP_PROP_FOURCC, CV_FOURCC( argv[3][0], argv[3][1], argv[3][2], argv[3][3] ));
    }
    
-   // Start capturing images continually
-   dip::Image frame;
-   std::thread thread = std::thread( run, std::ref( cap ), std::ref( frame ) );
+   CaptureThread *thread = new CaptureThread( cap );
    
-   // Get first frame
-   while ( !framecnt )
-      usleep(1000);
-      
-   std::cout << frame;
+   // Wait for first frame
+   while ( !thread->updated() ) {
+      // Bail on error
+      if ( !thread->running() ) {
+         return 1;
+      }
+   
+      usleep( 1000 );
+   }
+   
+   // Convert OpenCV frame to DIPlib. As the memory will be reused, we do this
+   // only once.
+   dip::Image frame = dcv::MatToDip( thread->frame() );
+   
+   // Convert BGR to RGB
+   frame.TensorToSpatial( 2 );
+   frame.Mirror( { 0, 0, 1 } );
+   frame.SpatialToTensor( 2 );
+   frame.SetColorSpace( "RGB" );
 
    // Show image      
    dip::viewer::SliceViewer::Ptr window = dip::viewer::SliceViewer::Create( frame, "Webcam" );
    dip::viewer::GLFWManager manager;
    manager.createWindow( window );
 
+   // Update image when new frames arrive, but allow continuous interaction.
    while ( manager.activeWindows() ) {
-      if ( showcnt != framecnt ) {
+      if ( thread->updated() )
+      {
          dip::viewer::Viewer::Guard guard( *window );
          window->setImage( frame );
-         showcnt = framecnt;
       }
 
       manager.processEvents();
+      usleep( 1000 );
    }
 
-   // Wait for last capture to be done
-   while ( showcnt == framecnt )
-      usleep(1000);
-
+   delete thread;   
    cap.release();
-   
-   showcnt++;
-   thread.join();
 
    return 0;
 }

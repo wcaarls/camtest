@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(DIPlib 3.0 REQUIRED DIP DIPviewer)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc highgui videoio)
+find_package(OpenCV REQUIRED COMPONENTS core videoio)
 find_package(Threads)
 
 add_executable(camtest camtest.cpp)
